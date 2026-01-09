@@ -113,9 +113,10 @@ class RawserApp(QObject):
                     headers=headers
                 )
 
-            # 顯示 cookie 狀態
+            # 顯示 headers 狀態
             has_cookies = bool(media.headers.get('Cookie'))
-            self.signal_log.emit(f"[Download] Cookies: {'Yes' if has_cookies else 'No'}")
+            referer = media.referrer or '(will use origin)'
+            self.signal_log.emit(f"[Download] Cookies: {'Yes' if has_cookies else 'No'}, Referer: {referer[:40]}")
 
             task = await self.downloader.download(media)
 

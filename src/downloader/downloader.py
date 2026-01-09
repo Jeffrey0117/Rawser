@@ -65,6 +65,8 @@ class Downloader:
         優先使用攔截到的 headers，缺少的用預設值補充
         這樣可以更好地模擬瀏覽器行為，避免被伺服器拒絕
         """
+        from urllib.parse import urlparse
+
         headers = self.DEFAULT_HEADERS.copy()
 
         # 使用攔截到的 headers 覆蓋預設值
@@ -74,11 +76,18 @@ class Downloader:
         # 確保 Referer 存在（很多影片伺服器會檢查）
         if media.referrer and 'Referer' not in headers:
             headers['Referer'] = media.referrer
+        elif 'Referer' not in headers:
+            # 如果沒有 referrer，用 media URL 的 origin 作為 Referer
+            parsed = urlparse(media.url)
+            headers['Referer'] = f"{parsed.scheme}://{parsed.netloc}/"
 
-        # 如果有 first_party_url，也可以用作 Origin
+        # 如果有 first_party_url，用作 Origin
         if media.first_party_url:
-            from urllib.parse import urlparse
             parsed = urlparse(media.first_party_url)
+            headers['Origin'] = f"{parsed.scheme}://{parsed.netloc}"
+        elif 'Origin' not in headers:
+            # 沒有 first_party_url，用 media URL 的 origin
+            parsed = urlparse(media.url)
             headers['Origin'] = f"{parsed.scheme}://{parsed.netloc}"
 
         return headers
