@@ -21,10 +21,11 @@ from PySide6.QtWidgets import (
     QStackedWidget,
 )
 from PySide6.QtCore import Qt, Signal, Slot, QUrl
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QColor
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from src.gui.widgets import TaskItemWidget, MediaItemWidget
+from src.gui.history_popup import HistoryPopup, HistoryItem, LongPressButton
 
 
 class MainWindow(QMainWindow):
@@ -56,7 +57,9 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self._webviews: Dict[str, QWebEngineView] = {}
         self._current_tab_id: Optional[str] = None
+        self._history_thumbnails: Dict[str, Dict[str, QPixmap]] = {}  # tab_id -> {url: thumbnail}
         self._setup_ui()
+        self._setup_history_popup()
         self._connect_signals()
 
     def _setup_ui(self) -> None:
@@ -98,18 +101,20 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        # Back button
-        self.back_button = QPushButton("←")
+        # Back button (支援長按)
+        self.back_button = LongPressButton("←")
         self.back_button.setFixedWidth(36)
-        self.back_button.setToolTip("Back")
+        self.back_button.setToolTip("Back (long press for history)")
         self.back_button.clicked.connect(self._on_back)
+        self.back_button.long_pressed.connect(self._on_back_long_press)
         layout.addWidget(self.back_button)
 
-        # Forward button
-        self.forward_button = QPushButton("→")
+        # Forward button (支援長按)
+        self.forward_button = LongPressButton("→")
         self.forward_button.setFixedWidth(36)
-        self.forward_button.setToolTip("Forward")
+        self.forward_button.setToolTip("Forward (long press for history)")
         self.forward_button.clicked.connect(self._on_forward)
+        self.forward_button.long_pressed.connect(self._on_forward_long_press)
         layout.addWidget(self.forward_button)
 
         # Refresh button
@@ -239,6 +244,11 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready")
 
+    def _setup_history_popup(self) -> None:
+        """Setup history popup for back/forward buttons."""
+        self.history_popup = HistoryPopup(self)
+        self.history_popup.history_selected.connect(self._on_history_selected)
+
     def _connect_signals(self) -> None:
         """Connect internal signals."""
         self.url_input.returnPressed.connect(self._on_go_clicked)
@@ -250,12 +260,20 @@ class MainWindow(QMainWindow):
     # =========================================================================
 
     def _on_go_clicked(self) -> None:
-        """Handle Go button click."""
+        """Handle Go button click - navigate in current tab."""
         url = self.url_input.text().strip()
-        if url:
-            if not url.startswith(("http://", "https://")):
-                url = "https://" + url
-            self.signal_navigate.emit(url)
+        if not url:
+            return
+
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+
+        # 如果有當前 Tab，直接在當前 Tab 導航
+        if self._current_tab_id and self._current_tab_id in self._webviews:
+            self._webviews[self._current_tab_id].setUrl(QUrl(url))
+        else:
+            # 沒有 Tab，建立新的
+            self.signal_create_tab.emit(url)
 
     def _on_new_tab_clicked(self) -> None:
         """Handle New Tab button click."""
@@ -276,6 +294,107 @@ class MainWindow(QMainWindow):
         """Go forward in history."""
         if self._current_tab_id and self._current_tab_id in self._webviews:
             self._webviews[self._current_tab_id].forward()
+
+    def _on_back_long_press(self) -> None:
+        """Handle long press on back button - show history."""
+        self._show_history_popup(back=True)
+
+    def _on_forward_long_press(self) -> None:
+        """Handle long press on forward button - show forward history."""
+        self._show_history_popup(back=False)
+
+    def _show_history_popup(self, back: bool = True) -> None:
+        """Show history popup with thumbnails."""
+        if not self._current_tab_id or self._current_tab_id not in self._webviews:
+            return
+
+        view = self._webviews[self._current_tab_id]
+        history = view.history()
+
+        items = []
+        current_index = history.currentItemIndex()
+
+        if back:
+            # 顯示返回歷史 (當前頁面之前的)
+            for i in range(current_index - 1, max(current_index - 10, -1), -1):
+                hist_item = history.itemAt(i)
+                if hist_item.isValid():
+                    url = hist_item.url().toString()
+                    title = hist_item.title() or url
+                    # 取得縮圖（如果有）
+                    thumbnail = self._get_thumbnail(self._current_tab_id, url)
+                    items.append(HistoryItem(
+                        url=url,
+                        title=title,
+                        thumbnail=thumbnail,
+                        index=i - current_index  # 負數表示要回退幾步
+                    ))
+            anchor = self.back_button
+        else:
+            # 顯示前進歷史 (當前頁面之後的)
+            for i in range(current_index + 1, min(current_index + 10, history.count())):
+                hist_item = history.itemAt(i)
+                if hist_item.isValid():
+                    url = hist_item.url().toString()
+                    title = hist_item.title() or url
+                    thumbnail = self._get_thumbnail(self._current_tab_id, url)
+                    items.append(HistoryItem(
+                        url=url,
+                        title=title,
+                        thumbnail=thumbnail,
+                        index=i - current_index  # 正數表示要前進幾步
+                    ))
+            anchor = self.forward_button
+
+        if items:
+            self.history_popup.show_history(items, anchor)
+        else:
+            self.status_bar.showMessage("No history available")
+
+    def _on_history_selected(self, steps: int) -> None:
+        """Handle history item selection."""
+        if not self._current_tab_id or self._current_tab_id not in self._webviews:
+            return
+
+        view = self._webviews[self._current_tab_id]
+        history = view.history()
+
+        # 計算目標 index
+        target_index = history.currentItemIndex() + steps
+        if 0 <= target_index < history.count():
+            history.goToItem(history.itemAt(target_index))
+
+    def _get_thumbnail(self, tab_id: str, url: str) -> Optional[QPixmap]:
+        """Get cached thumbnail for URL."""
+        if tab_id in self._history_thumbnails:
+            return self._history_thumbnails[tab_id].get(url)
+        return None
+
+    def _capture_thumbnail(self, tab_id: str) -> None:
+        """Capture thumbnail of current page."""
+        if tab_id not in self._webviews:
+            return
+
+        view = self._webviews[tab_id]
+        url = view.url().toString()
+
+        if not url or url == "about:blank":
+            return
+
+        # 初始化 tab 的縮圖快取
+        if tab_id not in self._history_thumbnails:
+            self._history_thumbnails[tab_id] = {}
+
+        # 截圖
+        pixmap = view.grab()
+        if not pixmap.isNull():
+            # 縮小尺寸節省記憶體
+            scaled = pixmap.scaled(
+                320, 180,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            self._history_thumbnails[tab_id][url] = scaled
 
     def _on_refresh(self) -> None:
         """Refresh current page."""
@@ -315,16 +434,24 @@ class MainWindow(QMainWindow):
         """Handle new tab creation with WebEngineView."""
         # 建立 WebEngineView
         webview = QWebEngineView()
-        webview.setUrl(QUrl(url))
 
-        # URL 變更時更新輸入框
+        # 設定深色背景避免載入時閃白
+        webview.setStyleSheet("background-color: #1e1e1e;")
+        webview.page().setBackgroundColor(QColor("#1e1e1e"))
+
+        # 連接信號
         webview.urlChanged.connect(lambda qurl: self._on_url_changed(tab_id, qurl))
+        webview.loadStarted.connect(lambda: self._on_load_started(tab_id))
+        webview.loadProgress.connect(lambda p: self._on_load_progress(tab_id, p))
         webview.loadFinished.connect(lambda ok: self._on_load_finished(tab_id, ok))
 
         self._webviews[tab_id] = webview
         self.browser_stack.addWidget(webview)
         self.browser_stack.setCurrentWidget(webview)
         self._current_tab_id = tab_id
+
+        # 開始載入
+        webview.setUrl(QUrl(url))
 
         # 建立 Task item
         task_widget = TaskItemWidget(tab_id, url)
@@ -344,10 +471,34 @@ class MainWindow(QMainWindow):
         if tab_id == self._current_tab_id:
             self.url_input.setText(qurl.toString())
 
+    def _on_load_started(self, tab_id: str) -> None:
+        """Handle page load started."""
+        if tab_id == self._current_tab_id:
+            self.progress_bar.setValue(0)
+            self.progress_bar.setVisible(True)
+            self.status_bar.showMessage("Loading...")
+
+    def _on_load_progress(self, tab_id: str, progress: int) -> None:
+        """Handle page load progress."""
+        if tab_id == self._current_tab_id:
+            self.progress_bar.setValue(progress)
+
     def _on_load_finished(self, tab_id: str, ok: bool) -> None:
         """Handle page load finished."""
+        if tab_id == self._current_tab_id:
+            self.progress_bar.setValue(100)
+            # 載入完成後隱藏進度條
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(500, lambda: self.progress_bar.setValue(0))
+
         status = "loaded" if ok else "failed"
+        self.status_bar.showMessage(f"Page {status}")
         self.on_log(f"[NAV] Page {status}: {tab_id}")
+
+        # 載入成功後截圖（延遲一點確保頁面渲染完成）
+        if ok:
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(800, lambda: self._capture_thumbnail(tab_id))
 
     @Slot(str, str)
     def on_tab_updated(self, tab_id: str, state: str) -> None:
