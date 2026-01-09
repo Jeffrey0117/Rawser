@@ -1,14 +1,13 @@
 """
 Rawser - Media Download Tool
-Main entry point with Qt and asyncio integration via qasync.
+使用 Qt WebEngine 嵌入式瀏覽器
 """
-
 import sys
 import asyncio
 
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt
-from qasync import QEventLoop, asyncClose
+from qasync import QEventLoop
 
 from src.gui.main_window import MainWindow
 
@@ -60,14 +59,6 @@ def setup_dark_theme(app: QApplication) -> None:
     QPushButton:disabled {
         background-color: #3c3c3c;
         color: #6d6d6d;
-    }
-
-    QPushButton#dangerButton {
-        background-color: #c42b1c;
-    }
-
-    QPushButton#dangerButton:hover {
-        background-color: #d63a2c;
     }
 
     QListWidget {
@@ -205,7 +196,6 @@ async def main_async() -> int:
     window.signal_navigate.connect(app_core.on_navigate)
     window.signal_create_tab.connect(app_core.on_create_tab)
     window.signal_close_tab.connect(app_core.on_close_tab)
-    window.signal_toggle_browse.connect(app_core.on_toggle_browse)
     window.signal_start_download.connect(app_core.on_start_download)
 
     # Connect signals: App -> GUI
@@ -216,8 +206,8 @@ async def main_async() -> int:
     app_core.signal_download_progress.connect(window.on_download_progress)
     app_core.signal_download_complete.connect(window.on_download_complete)
 
-    # Start browser engine
-    await app_core.start()
+    # Start app (install URL interceptor)
+    app_core.start()
 
     window.show()
 
@@ -226,7 +216,7 @@ async def main_async() -> int:
         await asyncio.sleep(0.1)
 
     # Cleanup
-    await app_core.stop()
+    app_core.stop()
 
     return 0
 
@@ -241,7 +231,7 @@ def main() -> int:
     # Create application
     app = QApplication(sys.argv)
     app.setApplicationName("Rawser")
-    app.setApplicationVersion("0.1.0")
+    app.setApplicationVersion("0.2.0")
 
     # Apply dark theme
     setup_dark_theme(app)

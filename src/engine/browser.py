@@ -1,47 +1,77 @@
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
-from typing import Optional
+from PySide6.QtCore import QObject, Signal, QUrl
+from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
+from typing import Dict, Optional
 
-class BrowserEngine:
+
+class BrowserEngine(QObject):
+    """Qt WebEngine 管理器"""
+
+    # Signals
+    signal_page_loaded = Signal(str, str)  # tab_id, url
+    signal_page_error = Signal(str, str)  # tab_id, error
+
     def __init__(self):
-        self._playwright = None
-        self._browser: Optional[Browser] = None
+        super().__init__()
+        self._profile = QWebEngineProfile.defaultProfile()
+        self._views: Dict[str, QWebEngineView] = {}
+        self._current_tab_id: Optional[str] = None
 
-    async def start(self, headless: bool = True):
-        """啟動 Chromium 引擎"""
-        self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(
-            headless=headless,
-            args=['--disable-blink-features=AutomationControlled']
-        )
+    def create_view(self, tab_id: str) -> QWebEngineView:
+        """建立新的 WebEngineView"""
+        view = QWebEngineView()
+        page = QWebEnginePage(self._profile, view)
+        view.setPage(page)
 
-    async def stop(self):
-        """停止引擎"""
-        if self._browser:
-            await self._browser.close()
-        if self._playwright:
-            await self._playwright.stop()
+        # 連接信號
+        view.loadFinished.connect(lambda ok: self._on_load_finished(tab_id, ok))
+        view.urlChanged.connect(lambda url: self._on_url_changed(tab_id, url))
 
-    async def create_context(self) -> BrowserContext:
-        """建立新的 BrowserContext（獨立 session）"""
-        if not self._browser:
-            raise RuntimeError("Browser not started")
-        return await self._browser.new_context(
-            viewport={'width': 1280, 'height': 720},
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        )
+        self._views[tab_id] = view
+        return view
 
-    async def create_page(self, context: BrowserContext) -> Page:
-        """在 context 中建立 Page"""
-        return await context.new_page()
+    def get_view(self, tab_id: str) -> Optional[QWebEngineView]:
+        return self._views.get(tab_id)
 
-    async def close_page(self, page: Page):
-        """關閉 Page（但保留 context）"""
-        await page.close()
+    def close_view(self, tab_id: str):
+        if tab_id in self._views:
+            view = self._views.pop(tab_id)
+            view.deleteLater()
 
-    async def navigate(self, page: Page, url: str):
-        """導航到 URL"""
-        await page.goto(url, wait_until='domcontentloaded')
+    def navigate(self, tab_id: str, url: str):
+        view = self.get_view(tab_id)
+        if view:
+            if not url.startswith(('http://', 'https://')):
+                url = 'https://' + url
+            view.setUrl(QUrl(url))
+
+    def go_back(self, tab_id: str):
+        view = self.get_view(tab_id)
+        if view:
+            view.back()
+
+    def go_forward(self, tab_id: str):
+        view = self.get_view(tab_id)
+        if view:
+            view.forward()
+
+    def refresh(self, tab_id: str):
+        view = self.get_view(tab_id)
+        if view:
+            view.reload()
+
+    def _on_load_finished(self, tab_id: str, ok: bool):
+        view = self.get_view(tab_id)
+        if view:
+            url = view.url().toString()
+            if ok:
+                self.signal_page_loaded.emit(tab_id, url)
+            else:
+                self.signal_page_error.emit(tab_id, "Load failed")
+
+    def _on_url_changed(self, tab_id: str, url: QUrl):
+        pass  # 可用於更新 URL 欄
 
     @property
-    def is_running(self) -> bool:
-        return self._browser is not None
+    def profile(self) -> QWebEngineProfile:
+        return self._profile
