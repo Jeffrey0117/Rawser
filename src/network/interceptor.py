@@ -117,19 +117,23 @@ class MediaHandler(ABC):
 
 
 class MP4Handler(MediaHandler):
-    """處理 MP4 影片"""
+    """處理 MP4 / MOV 影片"""
+
+    # 支援的副檔名
+    VIDEO_EXTENSIONS = ['.mp4', '.mov', '.m4v']
 
     def _try_handle(self, url: str, info: QWebEngineUrlRequestInfo) -> Optional[MediaURL]:
         url_lower = url.lower()
 
         # 檢查副檔名
-        if '.mp4' in url_lower:
-            # 過濾掉廣告和追蹤
-            if self._is_valid_media_url(url_lower):
-                return self._create_media_url(url, MediaType.MP4, info)
+        for ext in self.VIDEO_EXTENSIONS:
+            if ext in url_lower:
+                # 過濾掉廣告和追蹤
+                if self._is_valid_media_url(url_lower):
+                    return self._create_media_url(url, MediaType.MP4, info)
 
         # 檢查 content-type 暗示
-        if 'video/mp4' in url_lower:
+        if 'video/mp4' in url_lower or 'video/quicktime' in url_lower:
             return self._create_media_url(url, MediaType.MP4, info)
 
         return None
