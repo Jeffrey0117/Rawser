@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QStackedWidget,
 )
 from PySide6.QtCore import Qt, Signal, Slot, QUrl
-from PySide6.QtGui import QFont, QColor
+from PySide6.QtGui import QFont, QColor, QPixmap
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from src.gui.widgets import TaskItemWidget, MediaItemWidget

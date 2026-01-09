@@ -3,11 +3,18 @@ Media URL Interceptor - Handler Chain 模式
 參考 facebooc 的 Handler Chain 設計
 """
 from abc import ABC, abstractmethod
-from PySide6.QtWebEngineCore import QWebEngineUrlRequestInterceptor, QWebEngineUrlRequestInfo
+from PySide6.QtWebEngineCore import (
+    QWebEngineUrlRequestInterceptor,
+    QWebEngineUrlRequestInfo,
+    QWebEngineProfile,
+)
+from PySide6.QtNetwork import QNetworkCookie
+from PySide6.QtCore import QUrl
 from typing import List, Callable, Optional, Dict
 from enum import Enum
 from dataclasses import dataclass, field
 from datetime import datetime
+from urllib.parse import urlparse
 
 
 class MediaType(Enum):
@@ -244,6 +251,85 @@ class SkipHandler(MediaHandler):
 
 
 # =============================================================================
+# Cookie 管理器 - 從 WebEngine 獲取真實 Cookies
+# =============================================================================
+
+class CookieManager:
+    """
+    管理從 Qt WebEngine 獲取的 Cookies
+
+    Qt WebEngine 的 cookie store 是非同步的，
+    我們需要收集 cookies 然後在下載時使用
+    """
+
+    def __init__(self):
+        self._cookies: Dict[str, Dict[str, str]] = {}  # domain -> {name: value}
+        self._cookie_store = None
+
+    def setup(self, profile: QWebEngineProfile):
+        """設定 cookie store 監聽"""
+        self._cookie_store = profile.cookieStore()
+        self._cookie_store.cookieAdded.connect(self._on_cookie_added)
+        self._cookie_store.cookieRemoved.connect(self._on_cookie_removed)
+
+    def _on_cookie_added(self, cookie: QNetworkCookie):
+        """當 cookie 被添加時"""
+        domain = cookie.domain()
+        name = cookie.name().data().decode('utf-8', errors='ignore')
+        value = cookie.value().data().decode('utf-8', errors='ignore')
+
+        # 移除開頭的 . (如 .example.com -> example.com)
+        if domain.startswith('.'):
+            domain = domain[1:]
+
+        if domain not in self._cookies:
+            self._cookies[domain] = {}
+
+        self._cookies[domain][name] = value
+
+    def _on_cookie_removed(self, cookie: QNetworkCookie):
+        """當 cookie 被移除時"""
+        domain = cookie.domain()
+        name = cookie.name().data().decode('utf-8', errors='ignore')
+
+        if domain.startswith('.'):
+            domain = domain[1:]
+
+        if domain in self._cookies and name in self._cookies[domain]:
+            del self._cookies[domain][name]
+
+    def get_cookies_for_url(self, url: str) -> str:
+        """
+        取得特定 URL 的 cookies（格式化為 Cookie header）
+
+        會匹配 domain 和其子域名
+        例如：cookies for .youtube.com 會匹配 www.youtube.com
+        """
+        try:
+            parsed = urlparse(url)
+            host = parsed.netloc.lower()
+
+            matching_cookies = {}
+
+            for domain, cookies in self._cookies.items():
+                # 完全匹配或子域名匹配
+                if host == domain or host.endswith('.' + domain):
+                    matching_cookies.update(cookies)
+
+            if matching_cookies:
+                return '; '.join(f'{k}={v}' for k, v in matching_cookies.items())
+
+        except Exception:
+            pass
+
+        return ''
+
+    def get_all_cookies(self) -> Dict[str, Dict[str, str]]:
+        """取得所有 cookies（用於 debug）"""
+        return self._cookies.copy()
+
+
+# =============================================================================
 # 主要的 Interceptor 類
 # =============================================================================
 
@@ -253,6 +339,10 @@ class MediaInterceptor(QWebEngineUrlRequestInterceptor):
 
     Handler Chain:
     SkipHandler → MP4Handler → M3U8Handler → MPDHandler → WebMHandler → AudioHandler
+
+    新增功能：
+    - 自動收集瀏覽器的 Cookies
+    - 下載時附帶真實的 Cookie header
     """
 
     def __init__(self, parent=None):
@@ -261,8 +351,15 @@ class MediaInterceptor(QWebEngineUrlRequestInterceptor):
         self._callback: Optional[Callable[[MediaURL], None]] = None
         self._seen_urls: set = set()  # 用於快速去重
 
+        # Cookie 管理器
+        self.cookie_manager = CookieManager()
+
         # 建立 Handler Chain
         self._handler_chain = self._build_handler_chain()
+
+    def setup_cookie_tracking(self, profile: QWebEngineProfile):
+        """設定 cookie 追蹤（需要在安裝 interceptor 後呼叫）"""
+        self.cookie_manager.setup(profile)
 
     def _build_handler_chain(self) -> MediaHandler:
         """
@@ -297,6 +394,11 @@ class MediaInterceptor(QWebEngineUrlRequestInterceptor):
         media = self._handler_chain.handle(url, info)
 
         if media:
+            # 附加 cookies 到 media headers
+            cookies = self.cookie_manager.get_cookies_for_url(url)
+            if cookies:
+                media.headers['Cookie'] = cookies
+
             self._seen_urls.add(url)
             self.media_urls.append(media)
 
@@ -315,6 +417,10 @@ class MediaInterceptor(QWebEngineUrlRequestInterceptor):
     def get_by_type(self, media_type: MediaType) -> List[MediaURL]:
         """取得特定類型的 media URLs"""
         return [m for m in self.media_urls if m.media_type == media_type]
+
+    def get_cookies_for_download(self, url: str) -> str:
+        """取得下載用的 cookies"""
+        return self.cookie_manager.get_cookies_for_url(url)
 
 
 # 為了相容性保留舊的類名

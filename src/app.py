@@ -37,14 +37,18 @@ class RawserApp(QObject):
         self._current_tab_id: Optional[str] = None
 
     def start(self):
-        """啟動應用程式 - 設定 URL Interceptor"""
+        """啟動應用程式 - 設定 URL Interceptor 和 Cookie 追蹤"""
         self.signal_log.emit("[Rawser] Starting...")
 
         # 設定全域 URL 攔截器
         profile = QWebEngineProfile.defaultProfile()
         profile.setUrlRequestInterceptor(self.interceptor)
 
+        # 啟用 Cookie 追蹤 - 這樣下載時可以帶上真實的 cookies
+        self.interceptor.setup_cookie_tracking(profile)
+
         self.signal_log.emit("[Rawser] URL Interceptor installed")
+        self.signal_log.emit("[Rawser] Cookie tracking enabled")
         self.signal_log.emit("[Rawser] Ready")
 
     def stop(self):
@@ -99,11 +103,19 @@ class RawserApp(QObject):
 
             if not media:
                 from .network.interceptor import MediaType
+                # 嘗試取得當前的 cookies
+                cookies = self.interceptor.get_cookies_for_download(url)
+                headers = {'Cookie': cookies} if cookies else {}
+
                 media = MediaURL(
                     url=url,
                     media_type=MediaType.MP4,
-                    headers={}
+                    headers=headers
                 )
+
+            # 顯示 cookie 狀態
+            has_cookies = bool(media.headers.get('Cookie'))
+            self.signal_log.emit(f"[Download] Cookies: {'Yes' if has_cookies else 'No'}")
 
             task = await self.downloader.download(media)
 
